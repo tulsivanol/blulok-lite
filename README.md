@@ -1,4 +1,4 @@
-# BluLok Demo (iOS)
+# BluLok Lite (iOS)
 
 iOS demo app for BluLok: BLE-connected lock with Open and Battery Eject flows, lock and battery frame animations, and optional On-Demand Resources for assets.
 
