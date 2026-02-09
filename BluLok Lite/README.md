@@ -5,9 +5,10 @@ Assets and Swift code are copied from **Android** (`app/src/main/assets/`). Andr
 ## Contents
 
 - **LockAnimationFrames/** — 114 PNGs (`0000.png`–`0113.png`) for the lock animation
-- **BatteryAnimationFrames/** — 114 PNGs: first frame `113-1.png` (renamed from 113 to avoid duplicate with lock’s last frame), then `0114.png`…`0226.png`. If missing, the battery screen shows text only.
-- **LockState.swift** — Lock state enum, `BatteryReleaseState`, and `BatteryEjectStep` (matches Android) with `targetFrame` for animations
-- **AnimationView.swift** — `LockAnimationView` (lock) and `BatteryAnimationView` (battery) at 25 fps; frame loaders `loadLockAnimationFrames()` and `loadBatteryAnimationFrames()`
+- **BatteryAnimationFrames/** — 163 frames: first frame `113-1.png` (renamed from 113 to avoid duplicate with lock’s last frame), then `0114.png`…`0275.png`. If missing, the battery screen shows text only.
+- **IncompleteLockFrames/** — 30 PNGs (0000–0029) for incomplete-lock loop. Matches Android incomplete-lock.
+- **LockState.swift** — Lock state (unknown, 1–6), `BatteryReleaseState`, `BatteryEjectStep` (incl. .ejected), `targetFrame` and `description`.
+- **AnimationView.swift** — LockAnimationView (50 fps), BatteryAnimationView (40 fps), IncompleteLockView (looping); loaders for lock, battery, incomplete-lock.
 - **AnimationFrameResources** — On-Demand Resources (ODR) manager for lock/battery frames; see below.
 
 ## Add to your Xcode project
@@ -19,7 +20,7 @@ Assets and Swift code are copied from **Android** (`app/src/main/assets/`). Andr
 - Check **Copy items if needed** and your app target.
 - Leave **Create groups** selected so the folder appears as a group; ensure **Add to targets** includes your app.
 
-For the **battery** animation, add **BatteryAnimationFrames** with first frame named `113-1.png` (to avoid duplicate with lock’s `0113.png`), then `0114.png`…`0226.png`. If you omit it, the battery flow still works with status text only.
+For the **battery** animation, add **BatteryAnimationFrames** with first frame named `113-1.png` (to avoid duplicate with lock’s `0113.png`), then `0114`…`0275` (163 frames). Add **IncompleteLockFrames** (0000…0029, 30 frames) for incomplete-lock. If omitted, those screens show text only.
 
 If you use an asset catalog instead:
 
@@ -42,24 +43,21 @@ LockAnimationView(lockState: currentLockState, frames: frames, fps: 25)
     .frame(width: 200, height: 200)
 ```
 
-**Frame mapping (matches Android `AnimationController.kt`):**
+**Lock frame mapping (matches Android LockAnimation.kt):** 2,3→45, 4→65, 5→75, 6→113, else→30. Lock FPS = 50.
 
-| LockState     | code | target frame |
-|---------------|------|--------------|
-| connected     | 1    | 30           |
-| armed         | 2    | 45           |
-| openInProgress| 3    | 65           |
-| open          | 4    | 75           |
-| close         | 5    | 113          |
-
-FPS is 25, same as Android.
+**Battery step → frame:** Idle→0, Instruction/Armed→77, Sent→122, Ejected→162. Battery FPS = 40.
 
 ### 4. Battery animation (matches Android BatteryAnimation.kt)
 
-- **BatteryEjectStep** drives the target frame: `idle` → 0, `instruction`/`armed` → 45 (blue segment), `sent` → 113 (green segment).
-- **HomeView** uses a two-tap flow: first tap shows instruction (frame 45), second tap sends `releaseBattery()` and plays eject (frame 113).
+- **BatteryEjectStep** drives the target frame: `idle`→0, `instruction`/`armed`→77, `sent`→122, `ejected`→162.
+- Two-tap flow; `ejected` is set when disconnected after sending (matches Android).
 
-### 5. On-Demand Resources (optional, for assets/frames)
+### 5. Incomplete-lock (matches Android IncompleteLockState)
+
+- When **lockState == .unknown** and **isInitialCheck** is true, **IncompleteLockView** is shown (looping 0…29) with message: “Ensure handle is in the correct starting position before attempting unlock.”
+- Tapping **Open** sets **isInitialCheck = false** and sends unlock (matches Android BluLokLite.isInitialCheck).
+
+### 6. On-Demand Resources (optional, for assets/frames)
 
 To ship frame assets as **On-Demand Resources** (smaller initial download; frames downloaded when needed):
 
@@ -72,7 +70,7 @@ To ship frame assets as **On-Demand Resources** (smaller initial download; frame
 
 The app uses `AnimationFrameResources` to request these tags when the user sees the lock or battery screen; a progress indicator is shown while downloading. If ODR is not configured, frames are loaded from the main bundle (fallback).
 
-### 6. BLE lock state
+### 7. BLE lock state
 
 Parse the first byte of your BLE characteristic and convert to `LockState`:
 
@@ -87,5 +85,6 @@ Then pass that `lockState` into `LockAnimationView` as above.
 To refresh iOS from Android:
 
 1. **Lock:** copy PNGs from Android `app/src/main/assets/lock/` into **LockAnimationFrames/**.
-2. **Battery:** copy from Android `app/src/main/assets/battery/` into **BatteryAnimationFrames/**; rename the first frame (113) to `113-1` to avoid duplicate with lock’s last frame, then 0114…0226.
-3. If Android’s frame count or state → target frame mapping changes, update `LockState.targetFrame` and `BatteryEjectStep.targetFrame` in **LockState.swift**, and the frame count (114) in **AnimationView.swift** if needed.
+2. **Battery:** copy from Android `app/src/main/assets/battery/` into **BatteryAnimationFrames/**; rename the first frame (113) to `113-1` to avoid duplicate with lock’s last frame, then 0114…0275 (163 frames).
+3. **Incomplete-lock:** copy Android assets/incomplete-lock/ into **IncompleteLockFrames/** (30 frames).
+4. If Android’s frame count or state → target frame mapping changes, update **LockState.swift** and loaders in **AnimationView.swift**.

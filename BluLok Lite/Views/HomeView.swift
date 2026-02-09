@@ -7,41 +7,9 @@
 
 import SwiftUI
 
-// MARK: - Lock state text (match Android)
+// MARK: - Lock state text (match Android: use LockState.description)
 private func lockStateText(_ state: LockState?) -> String {
-    guard let s = state else { return "Waiting for lock…" }
-    switch s {
-    case .connected: return "Lock is ready. Tap Open to arm."
-    case .armed: return "Key engaged. Pull the latch within ~30s."
-    case .openInProgress: return "Latch moving. Pull to open."
-    case .open: return "Latch open. Close the door to relock."
-    case .close: return "Key removed. Ready for next use."
-    }
-}
-
-private func targetFrame(_ state: LockState?) -> Int {
-    guard let s = state else { return 30 }
-    switch s {
-    case .connected: return 30
-    case .armed: return 45
-    case .openInProgress: return 65
-    case .open: return 75
-    case .close: return 113
-    }
-}
-
-
-// Lock Lottie progress (match Android frame mapping: 0, 50, 95, 103; close=0)
-private func lockProgress(_ state: LockState?) -> CGFloat {
-    let total: CGFloat = 300
-    guard let s = state else { return 0 }
-    switch s {
-    case .connected: return 0 / total
-    case .armed: return 50 / total
-    case .openInProgress: return 95 / total
-    case .open: return 103 / total
-    case .close: return 0
-    }
+    state?.description ?? "Waiting for lock…"
 }
 
 private func batteryStatusText(_ state: BatteryReleaseState?) -> String {
@@ -58,6 +26,7 @@ private func batteryStatusTextForStep(_ step: BatteryEjectStep) -> String {
     case .idle: return "Tap Battery Eject to start."
     case .instruction, .armed: return "Firmly depress battery, then press Arm Eject button."
     case .sent: return "Quickly release battery to eject."
+    case .ejected: return "Battery is removed from lock."
     }
 }
 
@@ -76,16 +45,17 @@ struct HomeView: View {
 
     /// Matches Android: "unlock" | "battery" | ""; empty or unlock → lock view, battery → battery view.
     @State private var commandType: String = ""
-    /// Matches Android BatteryEjectStep: Idle → Instruction → Sent (Armed optional).
+    /// Matches Android BatteryEjectStep: Idle → Instruction → Sent → Ejected.
     @State private var batteryStep: BatteryEjectStep = .idle
+    /// Matches Android BluLokLite.isInitialCheck: show incomplete-lock until user taps Open.
+    @State private var isInitialCheck: Bool = true
 
     var body: some View {
         ScrollView {
             VStack(spacing: kSpacingBetweenCards) {
                 statusCard
-                if ble.isConnected {
-                    bigStatusSection
-                }
+                // Always show lock/battery section (match Android: no if (isConnected) around big status Column).
+                bigStatusSection
                 actionsSection
                 if let err = ble.errorText, !err.isEmpty {
                     errorCard(err)
@@ -97,11 +67,20 @@ struct HomeView: View {
         }
         .navigationBarHidden(true)
         .onChange(of: ble.batteryState) { _, newValue in
+            guard let newValue else { return }
             if newValue == .notReady {
                 commandType = ""
                 batteryStep = .idle
             } else if newValue == .canRemove {
                 batteryStep = .sent
+            }
+        }
+        .onChange(of: ble.isConnected) { _, connected in
+            if !connected, batteryStep == .sent {
+                batteryStep = .ejected
+            }
+            if connected {
+                batteryStep = .idle
             }
         }
     }
@@ -110,10 +89,7 @@ struct HomeView: View {
     private var statusCard: some View {
         VStack(alignment: .leading, spacing: kSpacingInsideCard) {
             HStack(alignment: .center, spacing: kSpacingInsideCard) {
-                Image(systemName: ble.isConnected ? "checkmark.circle.fill" : "xmark.circle.fill")
-                    .font(.title3)
-                    .foregroundStyle(ble.isConnected ? Color(red: 0.18, green: 0.49, blue: 0.2) : Color.red)
-                
+                statusIcon
                 VStack(alignment: .leading, spacing: 2) {
                     Text(ble.connectedName ?? "No device")
                         .font(.subheadline.weight(.semibold))
@@ -125,7 +101,8 @@ struct HomeView: View {
                 Spacer()
                 if ble.isConnecting {
                     ProgressView()
-                        .scaleEffect(0.9)
+                        .scaleEffect(0.85)
+                        .frame(width: 18, height: 18)
                 }
             }
             
@@ -136,11 +113,12 @@ struct HomeView: View {
                 }
                 .buttonStyle(.bordered)
             } else {
-                Button { ble.startScan() } label: {
+                Button { ble.reconnect() } label: {
                     Label("Reconnect", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(ble.isConnecting)
             }
         }
         .padding(kCardPadding)
@@ -150,16 +128,59 @@ struct HomeView: View {
         .shadow(color: .black.opacity(0.06), radius: 4, y: 2)
     }
     
-    // MARK: - Big status (Android: BigLockStatus / BatteryAnimation – Lottie + text, spacingInsideCard)
+    /// Status icon: checkmark when connected; xmark with pulse animation when disconnected (Android: CheckCircle / Close + busy spinner).
+    private var statusIcon: some View {
+        let iconName = ble.isConnected ? "checkmark.circle.fill" : "xmark.circle.fill"
+        let color: Color = ble.isConnected ? Color(red: 0.18, green: 0.49, blue: 0.2) : .red
+        return Group {
+            if ble.isConnected {
+                Image(systemName: iconName)
+                    .font(.title3)
+                    .foregroundStyle(color)
+            } else {
+                TimelineView(.animation(minimumInterval: 0.05)) { context in
+                    let t = context.date.timeIntervalSinceReferenceDate
+                    let opacity = 0.55 + 0.45 * (0.5 + 0.5 * sin(t * 2.0 * .pi / 1.1))
+                    Image(systemName: iconName)
+                        .font(.title3)
+                        .foregroundStyle(color)
+                        .opacity(opacity)
+                }
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: ble.isConnected)
+    }
+    
+    
+    // MARK: - Big status (Android: IncompleteLockState when ready, else Lock / Battery)
     private var bigStatusSection: some View {
         Group {
-            if commandType == "battery" {
+            if ble.lockState == .armed{
+                incompleteLockView
+            } else if commandType == "battery" {
                 batteryStatusView
             } else {
                 lockStatusView
             }
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private var incompleteLockView: some View {
+        let frames = loadIncompleteLockFrames()
+        return VStack(spacing: 10) {
+            if !frames.isEmpty {
+                IncompleteLockView(frames: frames)
+                    .frame(maxWidth: .infinity)
+            }
+            Text("Ensure handle is in the correct starting position before attempting unlock.")
+                .font(.body)
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 30)
     }
     
     private var lockStatusView: some View {
@@ -231,6 +252,7 @@ struct HomeView: View {
         case .idle: return "Battery Eject"
         case .instruction, .armed: return "Arm Eject"
         case .sent: return "Ejecting…"
+        case .ejected: return "Ejected"
         }
     }
 
@@ -239,6 +261,7 @@ struct HomeView: View {
         case .idle: return "Tap Battery Eject to begin."
         case .instruction, .armed: return "Firmly depress battery, then press Arm Eject button."
         case .sent: return "Quickly release battery to eject."
+        case .ejected: return "Battery is removed from lock."
         }
     }
 
@@ -255,27 +278,29 @@ struct HomeView: View {
             HStack(alignment: .top, spacing: 12) {
                 actionCard(
                     title: "Open",
-                    info: "Pull latch within ~30s",
+                    info: "Arm · Pull latch within ~30s",
                     icon: "lock.open.fill",
                     enabled: ble.isConnected
                 ) {
                     commandType = "unlock"
+                    isInitialCheck = false
                     ble.sendUnlock()
                 }
                 actionCard(
                     title: batteryButtonTitle,
                     info: batteryButtonInfo,
                     icon: "battery.100.bolt",
-                    enabled: ble.isConnected && batteryStep != .sent
+                    enabled: ble.isConnected && batteryStep != .sent && batteryStep != .ejected
                 ) {
                     commandType = "battery"
                     switch batteryStep {
                     case .idle:
                         batteryStep = .instruction
                     case .instruction, .armed:
+//                        batteryStep = .sent
                         ble.releaseBattery()
                         // Sent is set only when BLE reports .canRemove (in onChange below), matching Android LaunchedEffect(batteryState)
-                    case .sent:
+                    case .sent, .ejected:
                         break
                     }
                 }

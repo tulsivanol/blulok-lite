@@ -22,6 +22,9 @@ struct DevicePickerView: View {
     var body: some View {
         VStack(spacing: 12) {
             header
+            if let name = ble.lastConnectedName, !ble.isConnected {
+                reconnectButton(to: name)
+            }
             if !ble.devices.isEmpty || !query.isEmpty {
                 searchField
             }
@@ -48,11 +51,31 @@ struct DevicePickerView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("Select your BluLok")
                 .font(.title2.weight(.semibold))
-            Text("Turn on your lock, then tap Scan. Tap a device to connect.")
+            Text("Turn on your lock, then tap Scan or Reconnect. Tap a device to connect.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func reconnectButton(to name: String) -> some View {
+        Button {
+            ble.reconnect()
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.clockwise")
+                    .font(.body.weight(.semibold))
+                Text("Reconnect to \(name)")
+                    .font(.subheadline.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            .background(Color.accentColor.opacity(0.15))
+            .foregroundStyle(Color.accentColor)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+        .buttonStyle(.plain)
+        .disabled(ble.isConnecting)
     }
 
     private var searchField: some View {

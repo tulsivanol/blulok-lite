@@ -1,5 +1,5 @@
 // LockAnimationView.swift — matches Android AnimationController.kt + LockAnimation.kt
-// Uses frame sequence 0000.png–0113.png (114 frames), 25 fps, initialFrame 30.
+// Lock: 114 frames (0000–0113), initialFrame 30, fps 50. Target by lockState?.code: 2,3->45, 4->65, 5->75, 6->113, else->30.
 // Source of truth: Android app/src/main/assets/
 
 import SwiftUI
@@ -18,21 +18,32 @@ func loadLockAnimationFrames(bundle: Bundle = .main) -> [UIImage] {
 /// Load battery animation frames from bundle. First frame is 113-1.png (renamed from 113 to avoid duplicate with lock’s last frame); then 0114.png … 0226.png (114 frames total).
 func loadBatteryAnimationFrames(bundle: Bundle = .main) -> [UIImage] {
     var images: [UIImage] = []
-
-        // First special frame
-        if let first = UIImage(named: "0113_1") {
-            images.append(first)
+    let firstNames = ["113-1", "0113-1", "0113_1"]
+    for name in firstNames {
+        if let img = UIImage(named: name) {
+            images.append(img)
+            break
         }
-
-        // Remaining frames
-        for index in 114...226 {
-            let name = String(format: "%04d", index)
-            if let image = UIImage(named: name) {
-                images.append(image)
-            }
+    }
+    for index in 114...275 {
+        let name = String(format: "%04d", index)
+        if let img = UIImage(named: name) {
+            images.append(img)
         }
+    }
+    return images
+}
 
-        return images
+/// Load incomplete-lock frames (30 frames 0000–0029). Matches Android incomplete-lock folder.
+func loadIncompleteLockFrames(bundle: Bundle = .main) -> [UIImage] {
+    (0..<30).compactMap { index in
+        let name = String(format: "%04d", index)
+        if let path = bundle.path(forResource: name, ofType: "png", inDirectory: "IncompleteLockFrames") ?? bundle.path(forResource: name, ofType: "png"),
+           let img = UIImage(contentsOfFile: path) {
+            return img
+        }
+        return UIImage(named: name, in: bundle, with: nil)
+    }
 }
 
 // MARK: - SwiftUI view
@@ -47,7 +58,7 @@ struct LockAnimationView: View {
     @State private var targetFrame: Int? = nil
     @State private var timer: Timer?
 
-    init(lockState: LockState?, frames: [UIImage], fps: Int = 25) {
+    init(lockState: LockState?, frames: [UIImage], fps: Int = 50) {
         self.lockState = lockState
         self.frames = frames
         self.fps = fps
@@ -62,42 +73,44 @@ struct LockAnimationView: View {
             }
         }
         .onChange(of: lockState) {
-            // Match Android: targetForState(null) = 30 (else branch); target = rawTarget.coerceIn(0, frames.size-1)
-            let target = lockState.map { $0.targetFrame } ?? 30
-            let clampedTarget = min(max(target, 0), max(0, frames.count - 1))
-            targetFrame = clampedTarget
-            if clampedTarget > currentFrame {
-                isPlaying = true
-            } else {
-                currentFrame = clampedTarget
-                isPlaying = false
-            }
+            applyTargetFromLockState()
         }
         .onAppear {
             if !frames.isEmpty {
                 currentFrame = min(max(currentFrame, 0), frames.count - 1)
             }
-            let target = lockState.map { $0.targetFrame } ?? 30
-            let clampedTarget = min(max(target, 0), max(0, frames.count - 1))
-            targetFrame = clampedTarget
-            if clampedTarget > currentFrame {
-                isPlaying = true
-            } else {
-                currentFrame = clampedTarget
-            }
+            applyTargetFromLockState()
         }
         .onDisappear {
             timer?.invalidate()
         }
         .onChange(of: isPlaying) { playing in
-            if playing { startAnimation() }
+            if playing { startAnimation(to: targetFrame) }
             else { timer?.invalidate() }
         }
     }
 
-    private func startAnimation() {
-        let end = (targetFrame ?? (frames.count - 1))
-        let clampedEnd = min(max(end, 0), max(0, frames.count - 1))
+    /// Sync target frame from lockState and start animation if needed (match Android AnimationController). Ensures open state (frame 75) and other states drive correctly.
+    private func applyTargetFromLockState() {
+        let rawTarget = lockState.map { $0.targetFrame } ?? 30
+        let maxFrame = max(0, frames.count - 1)
+        let clampedTarget = min(max(rawTarget, 0), maxFrame)
+        targetFrame = clampedTarget
+        if clampedTarget > currentFrame {
+            isPlaying = true
+            startAnimation(to: clampedTarget)
+        } else {
+            currentFrame = clampedTarget
+            isPlaying = false
+            timer?.invalidate()
+        }
+    }
+
+    private func startAnimation(to endFrame: Int? = nil) {
+        guard !frames.isEmpty else { return }
+        let end = endFrame ?? targetFrame ?? (frames.count - 1)
+        let maxFrame = frames.count - 1
+        let clampedEnd = min(max(end, 0), maxFrame)
         guard clampedEnd > currentFrame else {
             currentFrame = clampedEnd
             isPlaying = false
@@ -108,7 +121,7 @@ struct LockAnimationView: View {
         timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { t in
             currentFrame += 1
             if currentFrame >= clampedEnd || currentFrame >= frames.count {
-                currentFrame = min(clampedEnd, frames.count - 1)
+                currentFrame = min(clampedEnd, maxFrame)
                 isPlaying = false
                 t.invalidate()
             }
@@ -129,7 +142,7 @@ struct BatteryAnimationView: View {
     @State private var targetFrame: Int = 0
     @State private var timer: Timer?
 
-    init(batteryStep: BatteryEjectStep, frames: [UIImage], fps: Int = 25) {
+    init(batteryStep: BatteryEjectStep, frames: [UIImage], fps: Int = 40) {
         self.batteryStep = batteryStep
         self.frames = frames
         self.fps = fps
@@ -144,6 +157,7 @@ struct BatteryAnimationView: View {
             }
         }
         .onChange(of: batteryStep) {
+            print("New step: \(batteryStep), New target: \(batteryStep.targetFrame)")
             let rawTarget = batteryStep.targetFrame
             let clampedTarget = frames.isEmpty ? 0 : min(max(rawTarget, 0), frames.count - 1)
             targetFrame = clampedTarget
@@ -194,6 +208,47 @@ struct BatteryAnimationView: View {
             }
         }
         RunLoop.main.add(timer!, forMode: .common)
+    }
+}
+
+// MARK: - Incomplete lock (matches Android IncompleteLockState)
+
+struct IncompleteLockView: View {
+    let frames: [UIImage]
+    let fps: Int
+
+    @State private var currentFrame: Int = 0
+    @State private var timer: Timer?
+
+    init(frames: [UIImage], fps: Int = 25) {
+        self.frames = frames
+        self.fps = fps
+    }
+
+    var body: some View {
+        Group {
+            if let img = frames[safe: currentFrame] {
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFit()
+            }
+        }
+        .onAppear {
+            guard !frames.isEmpty else { return }
+            let end = frames.count - 1
+            timer?.invalidate()
+            let interval = 1.0 / Double(fps)
+            timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { t in
+                currentFrame += 1
+                if currentFrame >= end {
+                    currentFrame = 0
+                }
+            }
+            RunLoop.main.add(timer!, forMode: .common)
+        }
+        .onDisappear {
+            timer?.invalidate()
+        }
     }
 }
 

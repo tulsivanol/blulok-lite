@@ -33,6 +33,13 @@ final class BLEManager: NSObject, ObservableObject {
     private var unlockChar: CBCharacteristic?
     private var releaseChar: CBCharacteristic?
 
+    /// Last connected peripheral identifier for reconnect (matches Android reconnect()).
+    private var lastConnectedPeripheralIdentifier: UUID?
+    @Published var lastConnectedName: String?
+
+    /// When true, app shows DevicePickerView when disconnected (matches Android BluLokLite.didUserDisconnected).
+    @Published var didUserDisconnect: Bool = false
+
     override init() {
         super.init()
         central = CBCentralManager(delegate: self, queue: .main)
@@ -76,17 +83,46 @@ final class BLEManager: NSObject, ObservableObject {
         central.connect(device.peripheral, options: nil)
     }
 
-    func disconnect() {
+    /// Disconnect from the current peripheral. userInitiated: true when user taps Disconnect (shows picker next); false when app goes to background (auto-reconnect on foreground).
+    func disconnect(userInitiated: Bool = true) {
         guard let p = connectedPeripheral else { return }
+        lastConnectedPeripheralIdentifier = p.identifier
+        lastConnectedName = p.name ?? connectedName
+        if userInitiated { didUserDisconnect = true }
         isConnecting = false
         central.cancelPeripheralConnection(p)
     }
 
-    // Actions (like your Android buttons)
+    /// Reconnect to the last connected peripheral (matches Android BLEReceiveManager.reconnect() + ViewModel.connect clears didUserDisconnected).
+    /// Call this from Home (Reconnect button) or Picker (Reconnect to X); clears didUserDisconnect so UI shows Home with connecting state.
+    func reconnect() {
+        didUserDisconnect = false
+        guard let id = lastConnectedPeripheralIdentifier else {
+            startScan()
+            return
+        }
+        errorText = nil
+        let peripherals = central.retrievePeripherals(withIdentifiers: [id])
+        guard let p = peripherals.first else {
+            statusText = "Device not found. Scanning…"
+            startScan()
+            return
+        }
+        stopScan()
+        isConnecting = true
+        statusText = "Reconnecting to \(p.name ?? lastConnectedName ?? "device")…"
+        connectedPeripheral = p
+        p.delegate = self
+        central.connect(p, options: nil)
+    }
+
+    // MARK: - Actions (match Android: unlock, releaseBattery)
+
     func sendUnlock() {
         write(value: Data([0x01]), to: unlockChar)
     }
 
+    /// Send battery release command (matches Android: write 0 to BATTERY_RELEASE characteristic).
     func releaseBattery() {
         write(value: Data([0x00]), to: releaseChar)
     }
@@ -157,7 +193,10 @@ extension BLEManager: CBCentralManagerDelegate {
     func centralManager(_ central: CBCentralManager,
                         didConnect peripheral: CBPeripheral) {
         isConnected = true
+        didUserDisconnect = false
         connectedName = peripheral.name ?? "Connected"
+        lastConnectedPeripheralIdentifier = peripheral.identifier
+        lastConnectedName = peripheral.name ?? connectedName
         statusText = "Discovering services…"
 
         peripheral.discoverServices([controlServiceUUID])
@@ -167,21 +206,33 @@ extension BLEManager: CBCentralManagerDelegate {
                         didFailToConnect peripheral: CBPeripheral,
                         error: Error?) {
         isConnected = false
+        isConnecting = false
         statusText = "Failed to connect"
         errorText = error?.localizedDescription ?? "Unknown error"
+        print("Failure connecting to \(peripheral.name ?? "Unknown Device")")
     }
 
     func centralManager(_ central: CBCentralManager,
                         didDisconnectPeripheral peripheral: CBPeripheral,
                         error: Error?) {
         isConnected = false
+        isConnecting = false
         connectedName = nil
+        connectedPeripheral = nil
         unlockChar = nil
         releaseChar = nil
-        lockState = nil
-        batteryState = nil
+        // Keep lockState and batteryState so UI can still show last frame (e.g. battery ejected, lock open) when disconnected (match Android UX).
+        lastConnectedPeripheralIdentifier = peripheral.identifier
+        lastConnectedName = peripheral.name ?? lastConnectedName
         statusText = "Disconnected"
         if let error = error { errorText = error.localizedDescription }
+        // Auto-reconnect when connection was lost and user did not tap Disconnect (matches Android onConnectionStateChange STATE_DISCONNECTED).
+        if !didUserDisconnect, lastConnectedPeripheralIdentifier != nil {
+            DispatchQueue.main.async { [weak self] in
+                self?.reconnect()
+            }
+        }
+        print("Discovered peripheral disconnected")
     }
 }
 
